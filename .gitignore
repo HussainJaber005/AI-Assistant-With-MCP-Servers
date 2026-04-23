@@ -29,3 +29,5 @@ result/
 
 # Logs
 *.log
+
+users.db
