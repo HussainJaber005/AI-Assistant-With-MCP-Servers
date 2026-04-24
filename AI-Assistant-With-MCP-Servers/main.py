@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import os
 import re
+import json
 import asyncio
 from pathlib import Path
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Dict
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -13,23 +16,31 @@ from langchain_core.messages import SystemMessage, HumanMessage
 # =========================
 # FAST_MODELS:
 # نماذج أسرع، مناسبة لمهام التخطيط أو المهام الأخف
+# Google models (no :free) route through OpenRouter's BYOK feature when the
+# user has added a Google AI Studio key at openrouter.ai/settings/integrations.
+# That gives them ~1,500 Gemini requests/day free (charged against their Google
+# quota, not billed by OpenRouter). Free :free models remain as safety net.
 FAST_MODELS = [
-    "z-ai/glm-5.1",
-    "openai/gpt-5.4-mini",
+    "google/gemini-2.5-flash-lite",               # BYOK via Google AI Studio — very fast
+    "google/gemini-2.0-flash-001",                # BYOK — reliable fast fallback
+    "google/gemma-3-27b-it:free",                 # OpenRouter free pool fallback
+    "meta-llama/llama-3.3-70b-instruct:free",     # last resort
 ]
 
-# STRONG_MODELS:
-# نماذج أقوى، مناسبة لتوليد HTML النهائي بجودة أفضل
+# STRONG_MODELS — for full HTML generation
 STRONG_MODELS = [
-    "openai/gpt-5.4",
-    "openai/gpt-4o-mini",
+    "google/gemini-2.5-flash",                    # BYOK — fast + high quality
+    "google/gemini-2.5-pro",                      # BYOK — best quality when flash isn't enough
+    "qwen/qwen3-coder:free",                      # Free pool fallback (coder-tuned)
+    "openai/gpt-oss-120b:free",                   # Free pool fallback
+    "meta-llama/llama-3.3-70b-instruct:free",     # last resort
 ]
 
-# كم عدد النماذج التي نجربها كحد أقصى في حالة الـ fallback
-MAX_FALLBACK = 2
+# عدد النماذج التي نجربها كحد أقصى في الـ fallback
+MAX_FALLBACK = 6
 
-# مهلة الانتظار لكل استدعاء نموذج بالثواني
-TIMEOUT = 25
+# مهلة الانتظار لكل استدعاء نموذج بالثواني — free models are slower
+TIMEOUT = 60
 
 
 # =========================
@@ -183,6 +194,33 @@ async def run_with_fallback(
 # PROMPTS
 # =========================
 
+# مرحلة الأسئلة التوضيحية — AI يحلل الـ brief ويرجع أسئلة تصميمية للمستخدم
+CLARIFY_PROMPT = """You are a design consultant helping a user narrow down the design of a landing page.
+
+Given the user's brief, produce 3 to 5 concise clarifying questions about DESIGN decisions that would shape the final page. Cover dimensions like visual style, color palette, tone, hero treatment, must-include sections, typography, target audience — whichever matter most for this specific brief.
+
+Return ONLY valid JSON in this EXACT shape (no prose, no markdown fences, no explanation):
+
+{
+  "questions": [
+    {
+      "key": "short_snake_case_key",
+      "question": "Full question text (end with ?)",
+      "multi": false,
+      "options": ["Option A", "Option B", "Option C", "Option D"]
+    }
+  ]
+}
+
+RULES:
+- Produce 3 to 5 questions total.
+- Each question has 3 to 5 options, each option under 24 characters.
+- Set "multi": true only for questions where picking multiple makes sense (e.g. sections to include).
+- Questions must be about DESIGN (how it looks/feels), not about business logic.
+- Keep options opinionated and distinct — avoid overlap.
+- Return ONLY the JSON object. Nothing before or after it.
+"""
+
 # Prompt خاص بمرحلة التخطيط والتصميم
 # المفروض لا يرجع HTML بل فقط خطة تصميمية
 PLAN_DESIGN_PROMPT = """
@@ -230,6 +268,59 @@ Ensure:
 
 Return ONLY HTML.
 """
+
+
+# =========================
+# CLARIFY PIPELINE
+# =========================
+# تأخذ brief وترجع قائمة أسئلة تصميمية (JSON)
+
+def _extract_json_object(text: str) -> dict:
+    """Best-effort extraction of the first JSON object from a model's output."""
+    # Strip common markdown fences
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
+    # Find first { ... } block
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if not match:
+        raise ValueError("no JSON object found in model output")
+    return json.loads(match.group(0))
+
+
+async def clarify_brief(user_query: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    raw, model, logs = await run_with_fallback(
+        "clarify",
+        FAST_MODELS,
+        CLARIFY_PROMPT,
+        user_query,
+        2000,
+    )
+
+    try:
+        data = _extract_json_object(raw)
+    except (ValueError, json.JSONDecodeError) as e:
+        logs.append(f"[clarify] JSON parse failed: {e}")
+        raise Exception(f"clarify: could not parse model output: {e}")
+
+    raw_questions = data.get("questions") or []
+    questions: List[Dict[str, Any]] = []
+    for q in raw_questions:
+        if not isinstance(q, dict):
+            continue
+        question_text = str(q.get("question", "")).strip()
+        options = q.get("options") or []
+        if not question_text or not isinstance(options, list) or len(options) < 2:
+            continue
+        questions.append({
+            "key": str(q.get("key") or f"q{len(questions) + 1}")[:40],
+            "question": question_text[:200],
+            "multi": bool(q.get("multi", False)),
+            "options": [str(o)[:60] for o in options if str(o).strip()][:6],
+        })
+
+    if not questions:
+        raise Exception("clarify: model returned no valid questions")
+
+    return questions[:5], logs
 
 
 # =========================

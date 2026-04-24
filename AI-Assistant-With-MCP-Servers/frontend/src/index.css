@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; }
+  html { color-scheme: dark; }
+
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+
+  * { -webkit-font-smoothing: antialiased; }
+
+  /* Neutral dark scrollbar */
+  * { scrollbar-width: thin; scrollbar-color: #292B30 transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: #292B30; border-radius: 8px;
+    border: 2px solid transparent; background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3E4248; background-clip: padding-box; border: 2px solid transparent;
+  }
+
+  ::selection { background: rgba(226, 118, 68, 0.32); color: #FFFFFF; }
+
+  /* Remove iOS tap highlight */
+  html { -webkit-tap-highlight-color: transparent; }
+}
+
+@layer components {
+  /* ---------- Buttons ---------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-md text-[13px] font-medium
+           transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed
+           focus:outline-none focus-visible:shadow-focus;
+  }
+  .btn-primary {
+    @apply btn bg-accent hover:bg-accent-hover text-bg;
+  }
+  .btn-secondary {
+    @apply btn bg-bg-raised hover:bg-bg-hover border border-line-strong text-ink;
+  }
+  .btn-ghost {
+    @apply btn hover:bg-bg-raised text-ink-muted hover:text-ink;
+  }
+  .btn-icon {
+    @apply inline-flex items-center justify-center h-7 w-7 rounded-md
+           text-ink-muted hover:text-ink hover:bg-bg-raised transition-colors
+           focus:outline-none focus-visible:shadow-focus;
+  }
+
+  /* ---------- Form controls ---------- */
+  .input {
+    @apply w-full bg-bg-elev border border-line-strong rounded-md px-3 py-2 text-[13.5px] text-ink
+           placeholder:text-ink-faint transition-colors
+           focus:outline-none focus:border-accent focus:shadow-focus;
+  }
+
+  /* ---------- Surfaces ---------- */
+  .panel {
+    @apply bg-bg-elev border border-line flex flex-col min-h-0;
+  }
+  .panel-head {
+    @apply h-10 px-3 flex items-center justify-between border-b border-line
+           bg-bg-elev text-[12px];
+  }
+
+  /* ---------- Tabs ---------- */
+  .tab {
+    @apply px-2.5 py-1 rounded text-[12.5px] font-medium text-ink-muted
+           hover:text-ink hover:bg-bg-raised transition-colors;
+  }
+  .tab-active {
+    @apply tab bg-bg-raised text-ink;
+  }
+
+  /* ---------- Chips & meta ---------- */
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10.5px] font-medium
+           bg-bg-raised border border-line-strong text-ink-muted;
+  }
+  .chip-accent {
+    @apply chip bg-accent-soft border-accent/30 text-accent-ink;
+  }
+
+  /* ---------- Typography helpers ---------- */
+  .meta {
+    @apply font-mono text-[11px] tracking-widelabel uppercase text-ink-subtle;
+  }
+  .hairline {
+    @apply border-t border-line;
+  }
+
+  /* ---------- Links ---------- */
+  .link {
+    @apply text-accent hover:text-accent-hover underline underline-offset-4 decoration-accent/30
+           hover:decoration-accent transition-colors;
+  }
+
+  /* ---------- Preview canvas (Framer-style) ---------- */
+  .canvas-frame {
+    @apply bg-white rounded-sm shadow-canvas ring-1 ring-line-strong;
+  }
+}
