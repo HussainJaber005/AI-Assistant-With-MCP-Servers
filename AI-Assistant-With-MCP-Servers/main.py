@@ -1,35 +1,61 @@
-import os
-import re
-import asyncio
-from pathlib import Path
-from typing import List, Tuple, Any
+# =====================================================================
+# main.py
+# قلب المشروع — كل منطق الذكاء الاصطناعي يعيش هنا
+# هذا الملف مسؤول عن:
+#   1. إعداد نماذج الذكاء الاصطناعي عبر OpenRouter
+#   2. مرحلة الأسئلة التوضيحية (clarify) قبل البناء
+#   3. مرحلة التخطيط والتصميم (plan+design) للطلبات المعقدة
+#   4. مرحلة البناء (builder) — تولّد ملف HTML كامل
+#   5. مرحلة الإصلاح (fixer) — تُصلح أي HTML ناقص
+#   6. نظام Fallback: لو فشل نموذج، نجرب الذي بعده تلقائيًا
+# =====================================================================
 
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+# يسمح بكتابة type hints حديثة حتى مع Python أقدم
+from __future__ import annotations
+
+# مكتبات Python القياسية
+import os         # للوصول لمتغيرات البيئة
+import re         # للتعامل مع التعبيرات النمطية (regex)
+import json       # لتحليل وتوليد JSON
+import asyncio    # لتشغيل عمليات بشكل غير متزامن (async)
+from pathlib import Path
+from typing import List, Tuple, Any, Dict
+
+# مكتبات خارجية
+from dotenv import load_dotenv                              # لتحميل ملف .env
+from langchain_openai import ChatOpenAI                     # لإنشاء كائن LLM
+from langchain_core.messages import SystemMessage, HumanMessage  # أنواع الرسائل
 
 # =========================
 # CONFIG
 # =========================
 # FAST_MODELS:
 # نماذج أسرع، مناسبة لمهام التخطيط أو المهام الأخف
+# Google models (no :free) route through OpenRouter's BYOK feature when the
+# user has added a Google AI Studio key at openrouter.ai/settings/integrations.
+# That gives them ~1,500 Gemini requests/day free (charged against their Google
+# quota, not billed by OpenRouter). Free :free models remain as safety net.
 FAST_MODELS = [
-    "z-ai/glm-5.1",
-    "openai/gpt-5.4-mini",
+    "google/gemini-2.5-flash-lite",               # BYOK via Google AI Studio — very fast
+    "google/gemini-2.0-flash-001",                # BYOK — reliable fast fallback
+    "google/gemma-3-27b-it:free",                 # OpenRouter free pool fallback
+    "meta-llama/llama-3.3-70b-instruct:free",     # last resort
 ]
 
-# STRONG_MODELS:
-# نماذج أقوى، مناسبة لتوليد HTML النهائي بجودة أفضل
+# STRONG_MODELS — for full HTML generation
 STRONG_MODELS = [
-    "openai/gpt-5.4",
-    "openai/gpt-4o-mini",
+    "google/gemini-2.5-flash",                    # BYOK — fast + high quality
+    "google/gemini-2.5-pro",                      # BYOK — best quality when flash isn't enough
+    "qwen/qwen3-coder:free",                      # Free pool fallback (coder-tuned)
+    "openai/gpt-oss-120b:free",                   # Free pool fallback
+    "meta-llama/llama-3.3-70b-instruct:free",     # last resort
 ]
 
-# كم عدد النماذج التي نجربها كحد أقصى في حالة الـ fallback
-MAX_FALLBACK = 2
+# عدد النماذج التي نجربها كحد أقصى في الـ fallback
+MAX_FALLBACK = 6
 
-# مهلة الانتظار لكل استدعاء نموذج بالثواني
-TIMEOUT = 25
+# مهلة الانتظار لكل استدعاء نموذج بالثواني — free models are slower
+TIMEOUT = 60
 
 
 # =========================
@@ -183,6 +209,33 @@ async def run_with_fallback(
 # PROMPTS
 # =========================
 
+# مرحلة الأسئلة التوضيحية — AI يحلل الـ brief ويرجع أسئلة تصميمية للمستخدم
+CLARIFY_PROMPT = """You are a design consultant helping a user narrow down the design of a landing page.
+
+Given the user's brief, produce 3 to 5 concise clarifying questions about DESIGN decisions that would shape the final page. Cover dimensions like visual style, color palette, tone, hero treatment, must-include sections, typography, target audience — whichever matter most for this specific brief.
+
+Return ONLY valid JSON in this EXACT shape (no prose, no markdown fences, no explanation):
+
+{
+  "questions": [
+    {
+      "key": "short_snake_case_key",
+      "question": "Full question text (end with ?)",
+      "multi": false,
+      "options": ["Option A", "Option B", "Option C", "Option D"]
+    }
+  ]
+}
+
+RULES:
+- Produce 3 to 5 questions total.
+- Each question has 3 to 5 options, each option under 24 characters.
+- Set "multi": true only for questions where picking multiple makes sense (e.g. sections to include).
+- Questions must be about DESIGN (how it looks/feels), not about business logic.
+- Keep options opinionated and distinct — avoid overlap.
+- Return ONLY the JSON object. Nothing before or after it.
+"""
+
 # Prompt خاص بمرحلة التخطيط والتصميم
 # المفروض لا يرجع HTML بل فقط خطة تصميمية
 PLAN_DESIGN_PROMPT = """
@@ -230,6 +283,73 @@ Ensure:
 
 Return ONLY HTML.
 """
+
+
+# =========================
+# CLARIFY PIPELINE
+# =========================
+# تأخذ brief وترجع قائمة أسئلة تصميمية (JSON)
+
+# دالة مساعدة لاستخراج كائن JSON من نص النموذج
+# أحيانًا النموذج يضيف ```json أو شرحًا قبل/بعد الـ JSON
+# نحاول استخراج أول { ... } كاملة من النص
+def _extract_json_object(text: str) -> dict:
+    """Best-effort extraction of the first JSON object from a model's output."""
+    # نزع علامات الكود الماركداونية إن وُجدت
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
+    # البحث عن أول كتلة { ... } في النص
+    match = re.search(r"\{[\s\S]*\}", cleaned)
+    if not match:
+        raise ValueError("no JSON object found in model output")
+    # تحويل النص إلى dict
+    return json.loads(match.group(0))
+
+
+# الدالة الرئيسية لمرحلة التوضيح
+# تأخذ طلب المستخدم وتُرجع 3-5 أسئلة تصميمية
+async def clarify_brief(user_query: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    # نطلب من نموذج سريع توليد الأسئلة (لا نحتاج النماذج القوية هنا)
+    raw, model, logs = await run_with_fallback(
+        "clarify",
+        FAST_MODELS,
+        CLARIFY_PROMPT,
+        user_query,
+        2000,
+    )
+
+    # محاولة تحليل JSON الذي رجع من النموذج
+    try:
+        data = _extract_json_object(raw)
+    except (ValueError, json.JSONDecodeError) as e:
+        logs.append(f"[clarify] JSON parse failed: {e}")
+        raise Exception(f"clarify: could not parse model output: {e}")
+
+    # التحقق من صحة كل سؤال — نتجاهل أي سؤال ناقص
+    raw_questions = data.get("questions") or []
+    questions: List[Dict[str, Any]] = []
+    for q in raw_questions:
+        # السؤال يجب أن يكون قاموسًا
+        if not isinstance(q, dict):
+            continue
+        question_text = str(q.get("question", "")).strip()
+        options = q.get("options") or []
+        # نتطلب نص سؤال + خيارين على الأقل
+        if not question_text or not isinstance(options, list) or len(options) < 2:
+            continue
+        # إضافة السؤال المنظف للقائمة
+        questions.append({
+            "key": str(q.get("key") or f"q{len(questions) + 1}")[:40],   # مفتاح قصير
+            "question": question_text[:200],                              # نص السؤال
+            "multi": bool(q.get("multi", False)),                         # هل اختيار متعدد؟
+            "options": [str(o)[:60] for o in options if str(o).strip()][:6],  # حد أقصى 6 خيارات
+        })
+
+    # لو لم ينتج عن النموذج أي سؤال صالح، نرمي خطأ
+    if not questions:
+        raise Exception("clarify: model returned no valid questions")
+
+    # نرجع أول 5 أسئلة + سجل العمليات
+    return questions[:5], logs
 
 
 # =========================
