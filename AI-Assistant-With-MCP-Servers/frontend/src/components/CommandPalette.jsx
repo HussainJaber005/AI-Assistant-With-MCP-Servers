@@ -1,5 +1,14 @@
+// =====================================================================
+// CommandPalette.jsx
+// لوحة الأوامر السريعة (مستوحاة من Linear / Raycast / Spotlight)
+// تُفتح بـ Cmd+K (أو Ctrl+K) وتسمح بـ:
+//   - البحث الفوري في الملفات المولّدة
+//   - تنفيذ الأوامر السريعة (إنشاء جديد، تحديث، تسجيل خروج…)
+// =====================================================================
+
 import { useEffect } from "react";
-import { Command as CmdkRoot } from "cmdk";
+import { Command as CmdkRoot } from "cmdk";   // مكتبة بناء لوحة الأوامر
+// أيقونات SVG محلية
 import {
   Search,
   File as FileIcon,
@@ -16,36 +25,41 @@ import {
  * Opens on Cmd/Ctrl+K. Fuzzy-searches drafts and app actions.
  */
 export function CommandPalette({
-  open, onOpenChange,
-  files, metaMap,
-  onPickDraft, onDeleteDraft,
-  actions, // [{ id, label, hint, icon, run }]
+  open, onOpenChange,        // حالة الفتح/الإغلاق
+  files, metaMap,            // قائمة الملفات + بياناتها الإضافية
+  onPickDraft, onDeleteDraft,// دوال عند اختيار/حذف ملف
+  actions,                   // قائمة الأوامر السريعة [{ id, label, hint, icon, run }]
 }) {
-  // Cmd/Ctrl+K toggles
+  // مستمع لاختصار Cmd/Ctrl+K — يبدّل حالة فتح/إغلاق اللوحة
   useEffect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
+        e.preventDefault();          // منع السلوك الافتراضي للمتصفح
         onOpenChange(!open);
       }
     };
     window.addEventListener("keydown", onKey);
+    // تنظيف المستمع عند إزالة المكوّن
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onOpenChange]);
 
+  // إذا كانت اللوحة مغلقة، لا نُصيّر شيئًا
   if (!open) return null;
 
   return (
+    // طبقة الخلفية المعتمة — النقر عليها يُغلق اللوحة
     <div
       className="fixed inset-0 z-[60] flex items-start justify-center pt-[14vh] px-4"
       onClick={() => onOpenChange(false)}
     >
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      {/* صندوق اللوحة نفسه — stopPropagation يمنع إغلاقه عند النقر عليه */}
       <div
         className="relative w-full max-w-xl bg-bg-elev border border-line-strong rounded-xl shadow-canvas overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <CmdkRoot label="Command menu" className="flex flex-col">
+          {/* صف البحث في الأعلى */}
           <div className="flex items-center gap-2 px-3 border-b border-line">
             <Search className="h-4 w-4 text-ink-subtle shrink-0" />
             <CmdkRoot.Input
@@ -56,11 +70,14 @@ export function CommandPalette({
             <kbd className="chip !text-[10px]">ESC</kbd>
           </div>
 
+          {/* قائمة النتائج (الأوامر + الملفات) */}
           <CmdkRoot.List className="max-h-[380px] overflow-y-auto p-1.5">
+            {/* رسالة "لا توجد نتائج" تظهر عندما لا يطابق البحث شيئًا */}
             <CmdkRoot.Empty className="py-10 text-center text-[13px] text-ink-subtle">
               No results.
             </CmdkRoot.Empty>
 
+            {/* قسم الأوامر السريعة */}
             <CmdkRoot.Group heading="Actions" className="px-1 pt-1 pb-0.5 text-[11px] uppercase tracking-widelabel text-ink-subtle font-mono">
               {actions.map((a) => (
                 <CmdkRoot.Item
@@ -76,9 +93,11 @@ export function CommandPalette({
               ))}
             </CmdkRoot.Group>
 
+            {/* قسم الملفات (Drafts) — يظهر فقط إذا كان عندنا ملفات */}
             {files && files.length > 0 && (
               <CmdkRoot.Group heading="Drafts" className="px-1 pt-2 pb-0.5 text-[11px] uppercase tracking-widelabel text-ink-subtle font-mono">
                 {files.map((f) => {
+                  // قراءة البيانات الإضافية للملف (الاسم الودود، الـ brief)
                   const m = (metaMap && metaMap[f.file_name]) || {};
                   const label = m.label || f.file_name;
                   return (
@@ -100,6 +119,7 @@ export function CommandPalette({
             )}
           </CmdkRoot.List>
 
+          {/* تذييل اللوحة — إرشادات الاختصارات */}
           <div className="border-t border-line px-3 py-1.5 flex items-center justify-between text-[11px] text-ink-subtle">
             <div className="flex items-center gap-3">
               <span><kbd className="meta">↑↓</kbd> navigate</span>

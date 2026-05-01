@@ -1,15 +1,30 @@
+# =====================================================================
+# main.py
+# قلب المشروع — كل منطق الذكاء الاصطناعي يعيش هنا
+# هذا الملف مسؤول عن:
+#   1. إعداد نماذج الذكاء الاصطناعي عبر OpenRouter
+#   2. مرحلة الأسئلة التوضيحية (clarify) قبل البناء
+#   3. مرحلة التخطيط والتصميم (plan+design) للطلبات المعقدة
+#   4. مرحلة البناء (builder) — تولّد ملف HTML كامل
+#   5. مرحلة الإصلاح (fixer) — تُصلح أي HTML ناقص
+#   6. نظام Fallback: لو فشل نموذج، نجرب الذي بعده تلقائيًا
+# =====================================================================
+
+# يسمح بكتابة type hints حديثة حتى مع Python أقدم
 from __future__ import annotations
 
-import os
-import re
-import json
-import asyncio
+# مكتبات Python القياسية
+import os         # للوصول لمتغيرات البيئة
+import re         # للتعامل مع التعبيرات النمطية (regex)
+import json       # لتحليل وتوليد JSON
+import asyncio    # لتشغيل عمليات بشكل غير متزامن (async)
 from pathlib import Path
 from typing import List, Tuple, Any, Dict
 
-from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+# مكتبات خارجية
+from dotenv import load_dotenv                              # لتحميل ملف .env
+from langchain_openai import ChatOpenAI                     # لإنشاء كائن LLM
+from langchain_core.messages import SystemMessage, HumanMessage  # أنواع الرسائل
 
 # =========================
 # CONFIG
@@ -275,18 +290,25 @@ Return ONLY HTML.
 # =========================
 # تأخذ brief وترجع قائمة أسئلة تصميمية (JSON)
 
+# دالة مساعدة لاستخراج كائن JSON من نص النموذج
+# أحيانًا النموذج يضيف ```json أو شرحًا قبل/بعد الـ JSON
+# نحاول استخراج أول { ... } كاملة من النص
 def _extract_json_object(text: str) -> dict:
     """Best-effort extraction of the first JSON object from a model's output."""
-    # Strip common markdown fences
+    # نزع علامات الكود الماركداونية إن وُجدت
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.MULTILINE)
-    # Find first { ... } block
+    # البحث عن أول كتلة { ... } في النص
     match = re.search(r"\{[\s\S]*\}", cleaned)
     if not match:
         raise ValueError("no JSON object found in model output")
+    # تحويل النص إلى dict
     return json.loads(match.group(0))
 
 
+# الدالة الرئيسية لمرحلة التوضيح
+# تأخذ طلب المستخدم وتُرجع 3-5 أسئلة تصميمية
 async def clarify_brief(user_query: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    # نطلب من نموذج سريع توليد الأسئلة (لا نحتاج النماذج القوية هنا)
     raw, model, logs = await run_with_fallback(
         "clarify",
         FAST_MODELS,
@@ -295,31 +317,38 @@ async def clarify_brief(user_query: str) -> Tuple[List[Dict[str, Any]], List[str
         2000,
     )
 
+    # محاولة تحليل JSON الذي رجع من النموذج
     try:
         data = _extract_json_object(raw)
     except (ValueError, json.JSONDecodeError) as e:
         logs.append(f"[clarify] JSON parse failed: {e}")
         raise Exception(f"clarify: could not parse model output: {e}")
 
+    # التحقق من صحة كل سؤال — نتجاهل أي سؤال ناقص
     raw_questions = data.get("questions") or []
     questions: List[Dict[str, Any]] = []
     for q in raw_questions:
+        # السؤال يجب أن يكون قاموسًا
         if not isinstance(q, dict):
             continue
         question_text = str(q.get("question", "")).strip()
         options = q.get("options") or []
+        # نتطلب نص سؤال + خيارين على الأقل
         if not question_text or not isinstance(options, list) or len(options) < 2:
             continue
+        # إضافة السؤال المنظف للقائمة
         questions.append({
-            "key": str(q.get("key") or f"q{len(questions) + 1}")[:40],
-            "question": question_text[:200],
-            "multi": bool(q.get("multi", False)),
-            "options": [str(o)[:60] for o in options if str(o).strip()][:6],
+            "key": str(q.get("key") or f"q{len(questions) + 1}")[:40],   # مفتاح قصير
+            "question": question_text[:200],                              # نص السؤال
+            "multi": bool(q.get("multi", False)),                         # هل اختيار متعدد؟
+            "options": [str(o)[:60] for o in options if str(o).strip()][:6],  # حد أقصى 6 خيارات
         })
 
+    # لو لم ينتج عن النموذج أي سؤال صالح، نرمي خطأ
     if not questions:
         raise Exception("clarify: model returned no valid questions")
 
+    # نرجع أول 5 أسئلة + سجل العمليات
     return questions[:5], logs
 
 

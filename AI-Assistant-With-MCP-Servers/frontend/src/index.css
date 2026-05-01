@@ -1,7 +1,17 @@
+/* =====================================================================
+   index.css
+   ملف الأنماط العام للتطبيق
+   - يستورد طبقات Tailwind (base / components / utilities)
+   - يضبط الإعدادات الأساسية (الخلفية، الخط، التمرير)
+   - يحتوي أصناف مخصصة (input, btn-primary, tab-active, إلخ)
+   ===================================================================== */
+
+/* استيراد طبقات Tailwind الثلاث */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* الطبقة الأساسية — إعدادات HTML/Body العامة */
 @layer base {
   html, body, #root { height: 100%; }
   html { color-scheme: dark; }

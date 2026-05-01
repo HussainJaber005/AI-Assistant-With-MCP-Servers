@@ -1,3 +1,11 @@
+// =====================================================================
+// Register.jsx
+// صفحة إنشاء حساب جديد
+// تأخذ: اسم مستخدم + بريد + كلمة مرور
+// مع مقياس مرئي يبيّن قوة كلمة المرور أثناء الكتابة
+// عند النجاح يتم تسجيل المستخدم تلقائيًا وإرساله للصفحة الرئيسية
+// =====================================================================
+
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -8,21 +16,26 @@ export default function Register() {
   const { register } = useAuth();
   const navigate = useNavigate();
 
+  // حالات النموذج
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPw, setShowPw] = useState(false);
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const [showPw, setShowPw] = useState(false);            // إظهار/إخفاء كلمة المرور
+  const [error, setError] = useState("");                   // رسالة الخطأ
+  const [submitting, setSubmitting] = useState(false);      // هل الطلب قيد التنفيذ؟
 
+  // تركيز تلقائي على اسم المستخدم عند فتح الصفحة
   const usernameRef = useRef(null);
   useEffect(() => { usernameRef.current?.focus(); }, []);
 
+  // حساب قوة كلمة المرور الحالية (0–4)
   const strength = scorePassword(password);
 
+  // عند الضغط على زر إنشاء الحساب
   const onSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    // فحص محلي قبل إرسال الطلب
     if (password.length < 6) {
       setError("Password must be at least 6 characters");
       return;
@@ -30,8 +43,10 @@ export default function Register() {
     setSubmitting(true);
     try {
       await register(username, email, password);
+      // نجاح — التطبيق يُسجّل المستخدم ويوجّهه للرئيسية
       navigate("/", { replace: true });
     } catch (err) {
+      // فشل — مثل: البريد محجوز، اسم المستخدم محجوز
       setError(err.message || "Registration failed");
     } finally {
       setSubmitting(false);
@@ -139,7 +154,15 @@ function Field({ label, icon, children }) {
   );
 }
 
-/** 0–4 strength buckets. */
+// =====================================================================
+// حساب قوة كلمة المرور — يرجع رقمًا من 0 إلى 4
+// نقطة لكل شرط محقق:
+//   - أطول من 6
+//   - أطول من 10
+//   - يحتوي حروفًا كبيرة وصغيرة
+//   - يحتوي أرقامًا
+//   - يحتوي رموزًا خاصة
+// =====================================================================
 function scorePassword(pw) {
   if (!pw) return 0;
   let score = 0;
@@ -151,7 +174,12 @@ function scorePassword(pw) {
   return Math.min(score, 4);
 }
 
+// =====================================================================
+// مقياس قوة كلمة المرور المرئي
+// 4 شرائط: تتلون حسب القوة (أحمر/برتقالي/أخضر)
+// =====================================================================
 function StrengthMeter({ strength, value }) {
+  // رسالة ابتدائية قبل الكتابة
   if (!value) {
     return (
       <p className="mt-1.5 text-[11.5px] text-ink-subtle">
@@ -159,7 +187,9 @@ function StrengthMeter({ strength, value }) {
       </p>
     );
   }
+  // تسميات الفئات الخمس
   const labels = ["Too weak", "Weak", "Okay", "Good", "Strong"];
+  // ألوان كل فئة
   const colors = [
     "bg-danger",
     "bg-danger",
@@ -169,6 +199,7 @@ function StrengthMeter({ strength, value }) {
   ];
   return (
     <div className="mt-2">
+      {/* الشرائط الأربعة */}
       <div className="flex gap-1">
         {[0, 1, 2, 3].map((i) => (
           <div
@@ -179,6 +210,7 @@ function StrengthMeter({ strength, value }) {
           />
         ))}
       </div>
+      {/* تسمية القوة + عدد الحروف */}
       <div className="mt-1 flex items-center justify-between text-[11px]">
         <span className="text-ink-subtle">{labels[strength]}</span>
         <span className="meta text-ink-faint">{value.length} chars</span>

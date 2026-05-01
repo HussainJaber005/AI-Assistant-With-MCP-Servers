@@ -1,12 +1,30 @@
+// =====================================================================
+// Dashboard.jsx
+// الصفحة الرئيسية للتطبيق — لوحة التحكم
+// تتكون من ثلاث لوحات قابلة للتغيير في الحجم:
+//   1. اليسار:  لوحة الـ Brief (كتابة الطلب) + قائمة المسودات
+//   2. الوسط:   معاينة HTML المُولّد (داخل iframe)
+//   3. اليمين:  عرض الكود المصدري
+//
+// المراحل (phase):
+//   - idle:      لم يبدأ المستخدم بعد
+//   - analyzing: نُرسل الطلب للذكاء الاصطناعي ليعطينا أسئلة توضيحية
+//   - answering: نعرض الأسئلة للمستخدم وننتظر إجاباته
+//   - building:  نولّد ملف HTML الفعلي
+//
+// يدعم اختصارات لوحة المفاتيح + لوحة أوامر سريعة (Cmd+K)
+// =====================================================================
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+// مكتبة لوحات قابلة للتغيير في الحجم بالسحب
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
-import { toast } from "sonner";
-import { SourceView } from "../components/SourceView";
-import { CommandPalette } from "../components/CommandPalette";
-import { ShortcutsOverlay } from "../components/ShortcutsOverlay";
-import { getMeta, setMeta, removeMeta } from "../lib/draftMeta";
+import { toast } from "sonner";                                  // الإشعارات
+import { SourceView } from "../components/SourceView";          // عارض الكود
+import { CommandPalette } from "../components/CommandPalette";  // لوحة الأوامر السريعة
+import { ShortcutsOverlay } from "../components/ShortcutsOverlay"; // عرض الاختصارات
+import { getMeta, setMeta, removeMeta } from "../lib/draftMeta"; // البيانات المحلية
 import {
   Send,
   RefreshCw,
@@ -39,18 +57,21 @@ import {
   Plus,
 } from "../components/icons";
 
+// أمثلة جاهزة تظهر للمستخدم لإلهامه عند بدء استخدام التطبيق
 const SUGGESTIONS = [
   "A sleek SaaS landing page for an AI code review tool.",
   "A minimal portfolio — hero, 3 projects, contact.",
   "A dark crypto wallet page with FAQ and features.",
 ];
 
+// قائمة الأجهزة المتاحة للمعاينة (مع عرض كل جهاز)
 const DEVICES = [
   { id: "desktop", label: "Desktop", width: 1536, icon: Monitor },
   { id: "tablet",  label: "Tablet",  width: 834,  icon: Tablet  },
   { id: "mobile",  label: "Mobile",  width: 390,  icon: Smartphone },
 ];
 
+// تبويبات الجوال — الجوال يعرض لوحة واحدة فقط في كل مرة
 const MOBILE_TABS = [
   { id: "brief",   label: "Brief",   icon: MessageSquare },
   { id: "drafts",  label: "Drafts",  icon: Layers },
@@ -59,7 +80,12 @@ const MOBILE_TABS = [
 ];
 
 /** Compose the final prompt sent to the builder, combining the user's
- *  brief with their answers to the clarifying questions. */
+ *  brief with their answers to the clarifying questions.
+ *
+ *  تبني النص النهائي الذي يُرسل لمرحلة البناء:
+ *  - الـ brief الأصلي
+ *  - + إجابات المستخدم على الأسئلة التوضيحية
+ */
 function composeFinalPrompt(brief, questions, answers) {
   const lines = [];
   for (const q of questions || []) {
@@ -71,84 +97,113 @@ function composeFinalPrompt(brief, questions, answers) {
   return `${brief}\n\nDesign decisions:\n${lines.join("\n")}`;
 }
 
+// =====================================================================
+// المكوّن الرئيسي — Dashboard
+// =====================================================================
 export default function Dashboard() {
+  // المستخدم الحالي + دالة تسجيل الخروج
   const { user, logout } = useAuth();
 
+  // ===== سجل المحادثة (الرسائل المعروضة في لوحة الـ Brief) =====
   const [activity, setActivity] = useState([
     { role: "system", text: "Describe the page you want to build. I'll ask a few quick design questions first." },
   ]);
+  // النص الذي يكتبه المستخدم في صندوق الإدخال
   const [prompt, setPrompt] = useState("");
+  // حالة الواجهة (للعرض فقط — مثل: "ready", "generating…")
   const [status, setStatus] = useState("ready");
+  // رسالة خطأ إن وُجدت
   const [error, setError] = useState("");
 
-  // phase: idle | analyzing | answering | building
+  // ===== مرحلة سير العمل =====
+  // idle      = لم يبدأ بعد
+  // analyzing = نطلب من الـAI أسئلة توضيحية
+  // answering = نعرض الأسئلة وننتظر الإجابات
+  // building  = نولّد HTML النهائي
   const [phase, setPhase] = useState("idle");
-  const [pendingBrief, setPendingBrief] = useState(""); // original brief awaiting answers
-  const [questions, setQuestions] = useState([]);
-  const [answers, setAnswers] = useState({});
+  const [pendingBrief, setPendingBrief] = useState("");   // الـ brief الأصلي محفوظًا
+  const [questions, setQuestions] = useState([]);          // الأسئلة من الـ AI
+  const [answers, setAnswers] = useState({});              // إجابات المستخدم
 
-  const [files, setFiles] = useState([]);
-  const [metaVersion, setMetaVersion] = useState(0); // bump to force re-read of localStorage meta
-  const [current, setCurrent] = useState(null);
-  const [source, setSource] = useState("");
-  const [sourceInfo, setSourceInfo] = useState("");
-  const [copied, setCopied] = useState(false);
+  // ===== الملفات المُولّدة =====
+  const [files, setFiles] = useState([]);                  // قائمة الملفات
+  const [metaVersion, setMetaVersion] = useState(0);       // عداد لإجبار إعادة القراءة من localStorage
+  const [current, setCurrent] = useState(null);            // الملف المعروض حاليًا
+  const [source, setSource] = useState("");                // الكود المصدري للملف
+  const [sourceInfo, setSourceInfo] = useState("");        // معلومات وصفية للكود
+  const [copied, setCopied] = useState(false);             // تأكيد النسخ
 
-  const [sideTab, setSideTab] = useState("brief");
-  const [device, setDevice] = useState("desktop");
-  const [mobileView, setMobileView] = useState("brief");
+  // ===== التبويبات والأجهزة =====
+  const [sideTab, setSideTab] = useState("brief");         // تبويب الجانب (brief/drafts)
+  const [device, setDevice] = useState("desktop");         // الجهاز للمعاينة
+  const [mobileView, setMobileView] = useState("brief");   // التبويب على الجوال
 
-  // Resizable panel refs + collapsed state (desktop only)
+  // ===== مراجع اللوحات + حالة الطي =====
+  // (يستخدم react-resizable-panels)
   const briefPanelRef = useRef(null);
   const sourcePanelRef = useRef(null);
   const [briefCollapsed, setBriefCollapsed] = useState(false);
   const [sourceCollapsed, setSourceCollapsed] = useState(false);
 
-  // Preview controls
-  const [zoom, setZoom] = useState("fit"); // "fit" | 0.5 | 0.75 | 1
-  const [showGrid, setShowGrid] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
-  const [previewKey, setPreviewKey] = useState(0); // bump to force iframe reload
+  // ===== تحكمات المعاينة =====
+  const [zoom, setZoom] = useState("fit");                  // درجة التكبير: fit أو 0.5/0.75/1
+  const [showGrid, setShowGrid] = useState(false);          // إظهار شبكة المساعدة؟
+  const [fullscreen, setFullscreen] = useState(false);      // وضع ملء الشاشة
+  const [previewKey, setPreviewKey] = useState(0);          // عداد لإعادة تحميل الـ iframe
 
-  // Global UX
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // ===== حالات النوافذ المنبثقة =====
+  const [paletteOpen, setPaletteOpen] = useState(false);    // لوحة الأوامر (Cmd+K)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);// نافذة عرض الاختصارات (?)
 
+  // ===== دوال طي/فتح اللوحات =====
+  // طي/فتح لوحة الـ Brief (اليسار)
   const toggleBrief = useCallback(() => {
     const p = briefPanelRef.current;
     if (!p) return;
     p.isCollapsed() ? p.expand() : p.collapse();
   }, []);
+  // طي/فتح لوحة الكود (اليمين)
   const toggleSource = useCallback(() => {
     const p = sourcePanelRef.current;
     if (!p) return;
     p.isCollapsed() ? p.expand() : p.collapse();
   }, []);
 
+  // مرجع لقائمة الرسائل (لتمريرها تلقائيًا للأسفل)
   const feedRef = useRef(null);
+  // مرجع للـ iframe (المعاينة)
   const iframeRef = useRef(null);
 
+  // هل المعالجة جارية؟ (نُعطّل الأزرار)
   const busy = phase === "analyzing" || phase === "building";
 
-  // ---------- Data ----------
+  // ===================================================================
+  // البيانات (Data)
+  // ===================================================================
 
+  // جلب قائمة الملفات المُولّدة من الـ backend
   const loadResults = useCallback(async () => {
     try {
       const data = await api.listResults();
       setFiles(data.results || []);
     } catch (err) {
+      // إذا انتهت الجلسة نوجّه لتسجيل الدخول
       if (err.status === 401) window.location.href = "/login";
     }
   }, []);
 
+  // عند فتح الصفحة لأول مرة، نجلب الملفات
   useEffect(() => { loadResults(); }, [loadResults]);
 
+  // كلما تغيّرت قائمة الرسائل، ننزل للأسفل تلقائيًا (كأي محادثة)
   useEffect(() => {
     const el = feedRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [activity, phase]);
 
-  // Esc → exit fullscreen preview
+  // ===== اختصارات لوحة المفاتيح =====
+
+  // Esc → الخروج من وضع ملء الشاشة في المعاينة
   useEffect(() => {
     if (!fullscreen) return;
     const onKey = (e) => { if (e.key === "Escape") setFullscreen(false); };
@@ -156,11 +211,12 @@ export default function Dashboard() {
     return () => window.removeEventListener("keydown", onKey);
   }, [fullscreen]);
 
-  // "?" → show shortcuts (unless typing in an input)
+  // "?" → فتح/إغلاق نافذة الاختصارات (إلا لو كان المستخدم يكتب في حقل)
   useEffect(() => {
     const onKey = (e) => {
       if (e.key !== "?") return;
       const t = e.target;
+      // لا نتدخل إذا المستخدم يكتب
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
       e.preventDefault();
       setShortcutsOpen((v) => !v);
@@ -169,7 +225,7 @@ export default function Dashboard() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Panel toggle shortcuts: Cmd/Ctrl+B brief, Cmd/Ctrl+\ source
+  // اختصارات طي اللوحات: Cmd/Ctrl+B = Brief، Cmd/Ctrl+\ = الكود المصدري
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.metaKey || e.ctrlKey)) return;
@@ -186,12 +242,15 @@ export default function Dashboard() {
     return () => window.removeEventListener("keydown", onKey);
   }, [toggleBrief, toggleSource]);
 
+  // فتح ملف نتيجة معين — يحمّل الكود المصدري ويعرضه
   const openResult = async (fileName) => {
     setCurrent(fileName);
     try {
+      // جلب الكود من الـ backend
       const text = await api.getSource(fileName);
       setSource(text);
       setSourceInfo(`${fileName} · ${formatBytes(text.length)}`);
+      // على الجوال نتحول مباشرة لتبويب المعاينة
       if (window.matchMedia("(max-width: 767px)").matches) setMobileView("preview");
     } catch (err) {
       setSource(`Failed to load source: ${err.message}`);
@@ -199,8 +258,10 @@ export default function Dashboard() {
     }
   };
 
-  // ---------- Flow 1: analyze brief (clarify) ----------
-
+  // ===================================================================
+  // المرحلة 1: تحليل الـ Brief (clarify)
+  // نُرسل الطلب لمحرك التوضيح ليرجع لنا أسئلة تصميمية
+  // ===================================================================
   const analyze = async (value) => {
     const q = (value ?? prompt).trim();
     if (!q || busy) return;
@@ -244,8 +305,10 @@ export default function Dashboard() {
     }
   };
 
-  // ---------- Flow 2: build (with or without answers) ----------
-
+  // ===================================================================
+  // المرحلة 2: البناء (build)
+  // نأخذ الـ brief + الإجابات ونُولّد ملف HTML النهائي
+  // ===================================================================
   const build = async (rawBrief) => {
     const brief = rawBrief ?? pendingBrief;
     if (!brief || busy) return;
@@ -299,6 +362,7 @@ export default function Dashboard() {
     }
   };
 
+  // إلغاء جلسة الأسئلة الحالية وإعادة كل شيء للحالة الابتدائية
   const cancelAnswers = () => {
     setQuestions([]);
     setAnswers({});
@@ -311,7 +375,7 @@ export default function Dashboard() {
     ]);
   };
 
-  // All questions are multi-select in the UI — clicking toggles an option in/out.
+  // كل الأسئلة في الواجهة اختيار متعدد — النقر يضيف/يحذف الخيار
   const pickAnswer = (key, value) => {
     setAnswers((prev) => {
       const cur = Array.isArray(prev[key]) ? prev[key] : prev[key] ? [prev[key]] : [];
@@ -322,14 +386,16 @@ export default function Dashboard() {
     });
   };
 
-  // Auto-pick answers for ONE question. Picks 2 random options for AI-flagged
-  // multi questions (e.g. "sections"), 1 random for everything else.
+  // اختيار تلقائي للإجابات لسؤال واحد
+  // - إذا كان السؤال متعدد الاختيار: نختار خيارَين عشوائيَين
+  // - إذا كان أحاديًا: نختار خيارًا واحدًا
   const autoPickOne = (q) => {
     const count = q.multi ? Math.min(2, q.options.length) : 1;
     const shuffled = [...q.options].sort(() => Math.random() - 0.5);
     setAnswers((prev) => ({ ...prev, [q.key]: shuffled.slice(0, count) }));
   };
 
+  // نسخ الكود المصدري إلى الحافظة
   const copySource = async () => {
     if (!source) return;
     try {
@@ -343,7 +409,7 @@ export default function Dashboard() {
     }
   };
 
-  // Build a memoized meta map for the drafts panel
+  // بناء خريطة بيانات الملفات (label, brief) — تتحدث عند تغيير الملفات أو metaVersion
   const metaMap = useMemo(() => {
     const map = {};
     for (const f of files) {
@@ -354,10 +420,12 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files, metaVersion]);
 
+  // حذف ملف من الـ backend + من الـ localStorage
   const deleteDraft = async (fileName) => {
     try {
       await api.deleteResult(fileName);
       removeMeta(fileName);
+      // إذا كان هذا الملف معروضًا حاليًا، نُفرغ المعاينة
       if (current === fileName) {
         setCurrent(null);
         setSource("");
@@ -370,14 +438,15 @@ export default function Dashboard() {
     }
   };
 
+  // إعادة تسمية ملف (محليًا فقط — البيانات في localStorage)
   const renameDraft = (fileName, newLabel) => {
     setMeta(fileName, { label: newLabel });
     setMetaVersion((v) => v + 1);
     toast.success(`Renamed to "${newLabel}"`);
   };
 
+  // البدء بمسوّدة جديدة — تصفير الجلسة بدون مساس بالملفات على الخادم
   const newDraft = () => {
-    // Reset the brief flow without touching any server state
     setActivity([
       { role: "system", text: "Describe the page you want to build. I'll ask a few quick design questions first." },
     ]);
@@ -393,8 +462,10 @@ export default function Dashboard() {
     toast("Started a new brief");
   };
 
+  // تنزيل الكود المصدري كملف HTML
   const downloadSource = () => {
     if (!source || !current) return;
+    // إنشاء Blob من النص ثم رابط مؤقت ينزّل تلقائيًا
     const blob = new Blob([source], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -403,12 +474,14 @@ export default function Dashboard() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(url);   // تنظيف الذاكرة
     toast.success(`Downloaded ${current}`);
   };
 
+  // تسجيل الخروج وإعادة التوجيه لصفحة الدخول
   const doLogout = async () => { await logout(); window.location.href = "/login"; };
 
+  // اختصار: Cmd/Ctrl + Enter داخل صندوق الإدخال يُرسل الـ brief
   const onKeyDown = (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -416,20 +489,26 @@ export default function Dashboard() {
     }
   };
 
+  // ===== قيم محسوبة للعرض =====
   const deviceCfg = useMemo(() => DEVICES.find((d) => d.id === device), [device]);
+  // ترتيب الملف الحالي في القائمة (للعرض: 02/07 مثلاً)
   const currentIndex = useMemo(
     () => (current ? files.findIndex((f) => f.file_name === current) : -1),
     [current, files]
   );
   const currentDraftNumber = currentIndex >= 0 ? files.length - currentIndex : null;
 
+  // أداة CSS مساعدة — تظهر العنصر في الجوال فقط حسب التبويب الحالي
   const mvClass = (v) => (mobileView === v ? "flex" : "hidden") + " md:flex";
 
-  // ---------- Render ----------
+  // ===================================================================
+  // العرض (Render)
+  // ===================================================================
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-bg">
-      {/* ========== Top bar ========== */}
+      {/* ========== الشريط العلوي (Top bar) ========== */}
+      {/* يحتوي: الشعار، اسم الملف الحالي، حالة العمل، زر الأوامر، زر الخروج */}
       <header className="h-12 shrink-0 border-b border-line flex items-center px-3 gap-2 sm:gap-3 bg-bg">
         <div className="flex items-center gap-2 min-w-0">
           <span className="h-6 w-6 rounded-md bg-accent/15 border border-accent/30 grid place-items-center">
@@ -507,10 +586,12 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* ========== Body ========== */}
+      {/* ========== جسم الصفحة (Body) ========== */}
+      {/* الثلاث لوحات: Brief / Preview / Source */}
       <div className="flex-1 min-h-0 relative">
-        {/* Extract panel content so mobile & desktop layouts can share it */}
+        {/* نخرج محتوى اللوحات إلى متغيرات لمشاركتها بين تخطيط الجوال والحاسوب */}
         {(() => {
+          // ===== محتوى لوحة Brief (مع الأسئلة والمسودات) =====
           const briefSidebarContent = (
             <>
               <div className="h-10 shrink-0 px-2 flex items-center gap-1 border-b border-line">
@@ -564,6 +645,8 @@ export default function Dashboard() {
             </>
           );
 
+          // ===== محتوى لوحة المعاينة (الوسط) =====
+          // تحتوي شريط أدوات (zoom/grid/reload/fullscreen) + الـ iframe + شريط اختيار الجهاز
           const canvasContent = (
             <>
               <div className="h-10 px-4 flex items-center justify-between border-b border-line shrink-0">
@@ -681,6 +764,8 @@ export default function Dashboard() {
             </>
           );
 
+          // ===== محتوى لوحة الكود المصدري (اليمين) =====
+          // تعرض كود HTML للملف المختار + أزرار التحميل/النسخ
           const sourceContent = (
             <>
               <div className="h-10 px-3 flex items-center justify-between border-b border-line shrink-0">
@@ -724,7 +809,7 @@ export default function Dashboard() {
 
           return (
             <>
-              {/* ---------- Mobile layout (stacked, one panel at a time) ---------- */}
+              {/* ===== تخطيط الجوال — لوحة واحدة في كل مرة (تبويبات) ===== */}
               <div className="md:hidden h-full flex flex-col">
                 <aside
                   className={`${mvClass(mobileView === "drafts" ? "drafts" : "brief")}
@@ -749,7 +834,8 @@ export default function Dashboard() {
                 </aside>
               </div>
 
-              {/* ---------- Desktop layout (resizable + collapsible panels) ---------- */}
+              {/* ===== تخطيط الحاسوب — لوحات قابلة للتغيير في الحجم ===== */}
+              {/* autoSaveId يحفظ أحجام اللوحات في localStorage تلقائيًا */}
               <PanelGroup
                 direction="horizontal"
                 autoSaveId="mawg-layout-v1"
@@ -816,7 +902,8 @@ export default function Dashboard() {
         })()}
       </div>
 
-      {/* ========== Mobile bottom tab bar ========== */}
+      {/* ========== شريط التبويبات السفلي للجوال ========== */}
+      {/* يُظهر 4 تبويبات: Brief / Drafts / Preview / Source */}
       <nav className="md:hidden shrink-0 border-t border-line bg-bg-elev h-14 flex items-stretch">
         {MOBILE_TABS.map((t) => {
           const active = mobileView === t.id || (mobileView === "drafts" && t.id === "drafts");
@@ -839,6 +926,7 @@ export default function Dashboard() {
         })}
       </nav>
 
+      {/* ========== لوحة الأوامر (تُفتح بـ Cmd+K) ========== */}
       <CommandPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
@@ -846,6 +934,7 @@ export default function Dashboard() {
         metaMap={metaMap}
         onPickDraft={openResult}
         onDeleteDraft={deleteDraft}
+        // قائمة الأوامر السريعة المتاحة
         actions={[
           { id: "new",          label: "New brief",            hint: "Reset chat",        run: newDraft,                          icon: <Plus className="h-3.5 w-3.5 text-accent" /> },
           { id: "toggle-brief", label: "Toggle Brief panel",   hint: "⌘B",                 run: toggleBrief,                       icon: <PanelLeft className="h-3.5 w-3.5 text-ink-subtle" /> },
@@ -856,13 +945,18 @@ export default function Dashboard() {
           { id: "logout",    label: "Sign out",            hint: "",                  run: doLogout,                         icon: <LogOut className="h-3.5 w-3.5 text-ink-subtle" /> },
         ]}
       />
+      {/* ========== نافذة عرض الاختصارات (تُفتح بـ ?) ========== */}
       <ShortcutsOverlay open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     </div>
   );
 }
 
-/* ======== Subcomponents ======== */
+// =====================================================================
+// المكونات الفرعية (Subcomponents)
+// كل واحد منها مسؤول عن جزء من الواجهة
+// =====================================================================
 
+// لوحة الـ Brief — تعرض المحادثة + الأسئلة + صندوق إدخال
 function BriefPanel({
   activity, feedRef, prompt, setPrompt, onSend, onKeyDown,
   busy, phase, error, showSuggestions,
@@ -947,11 +1041,13 @@ function BriefPanel({
   );
 }
 
+// لوحة المسوّدات — تعرض قائمة الملفات المُولّدة مع البحث والإعادة تسمية والحذف
 function DraftsPanel({ files, current, onPick, onRefresh, onDelete, onRename, metaMap }) {
-  const [query, setQuery] = useState("");
-  const [editing, setEditing] = useState(null); // file_name being renamed
-  const [editValue, setEditValue] = useState("");
+  const [query, setQuery] = useState("");                 // نص البحث
+  const [editing, setEditing] = useState(null);            // اسم الملف الذي تتم إعادة تسميته
+  const [editValue, setEditValue] = useState("");          // القيمة الجديدة
 
+  // تصفية الملفات حسب نص البحث (يبحث في الاسم، الـ label، والـ brief)
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return files;
@@ -965,13 +1061,17 @@ function DraftsPanel({ files, current, onPick, onRefresh, onDelete, onRename, me
     });
   }, [files, query, metaMap]);
 
+  // تجميع الملفات حسب التاريخ (اليوم / الأمس / هذا الأسبوع / أقدم)
   const groups = useMemo(() => groupByDate(filtered), [filtered]);
 
+  // بدء عملية إعادة التسمية
   const beginRename = (fileName) => {
     const m = metaMap[fileName] || {};
     setEditing(fileName);
+    // نستخدم الاسم الودود إن وُجد، وإلا اسم الملف بدون .html
     setEditValue(m.label || fileName.replace(/\.html$/, ""));
   };
+  // تأكيد إعادة التسمية وحفظها
   const commitRename = () => {
     if (editing) onRename(editing, editValue.trim() || editing);
     setEditing(null);
@@ -1083,11 +1183,13 @@ function DraftsPanel({ files, current, onPick, onRefresh, onDelete, onRename, me
   );
 }
 
+// تجميع الملفات حسب وقت التعديل في فئات: Today / Yesterday / This week / Older
 function groupByDate(files) {
   const now = new Date();
+  // كل القيم بالثواني (epoch) للمقارنة مع mtime
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
-  const startOfYesterday = startOfToday - 86400;
-  const startOfWeek = startOfToday - 6 * 86400;
+  const startOfYesterday = startOfToday - 86400;        // قبل 24 ساعة
+  const startOfWeek = startOfToday - 6 * 86400;          // قبل 6 أيام
 
   const buckets = { Today: [], Yesterday: [], "This week": [], Older: [] };
   for (const f of files) {
@@ -1097,17 +1199,21 @@ function groupByDate(files) {
     else if (mt >= startOfWeek)  buckets["This week"].push(f);
     else                         buckets.Older.push(f);
   }
+  // نُرجع فقط الفئات التي تحتوي ملفات
   return ["Today", "Yesterday", "This week", "Older"]
     .filter((k) => buckets[k].length)
     .map((label) => ({ label, items: buckets[label] }));
 }
 
+// صف واحد في تيار النشاط (المحادثة) — رسالة من المستخدم أو من النظام أو الأسئلة
 function ActivityRow({ item, questions, answers, onPick, onAutoPick, onBuild, onCancel, phase, interactive }) {
+  // رسائل النظام تظهر بشكل بسيط مائل
   if (item.role === "system") {
     return <div className="px-2 py-1.5 text-[12.5px] text-ink-subtle italic">{item.text}</div>;
   }
 
   const isUser = item.role === "user";
+  // أول حرف من اسم الكاتب (للأفاتار)
   const letter = (item.author || "?")[0].toUpperCase();
 
   return (
@@ -1189,8 +1295,9 @@ function ActivityRow({ item, questions, answers, onPick, onAutoPick, onBuild, on
   );
 }
 
+// مجموعة سؤال — السؤال + خياراته كأزرار
 function QuestionGroup({ q, value, onPick, onAutoPick, disabled }) {
-  // All questions are multi-select in the UI. Normalize value to an array.
+  // كل الأسئلة في الواجهة اختيار متعدد. نضمن أن القيمة دائمًا مصفوفة.
   const selected = Array.isArray(value) ? value : value ? [value] : [];
   const isSelected = (opt) => selected.includes(opt);
 
@@ -1235,6 +1342,7 @@ function QuestionGroup({ q, value, onPick, onAutoPick, disabled }) {
   );
 }
 
+// مؤشر "يكتب…" — ثلاث نقاط تنبض، يظهر أثناء معالجة الذكاء الاصطناعي
 function TypingIndicator({ label = "thinking" }) {
   return (
     <div className="flex items-center gap-1.5 py-2 pl-8 text-[12px] text-ink-muted">
@@ -1246,6 +1354,7 @@ function TypingIndicator({ label = "thinking" }) {
   );
 }
 
+// شارة الحالة في الشريط العلوي — لونها يتغير حسب المرحلة
 function StatusChip({ status, busy, phase }) {
   const dot =
     phase === "analyzing" || phase === "building"
@@ -1263,8 +1372,9 @@ function StatusChip({ status, busy, phase }) {
   );
 }
 
+// طبقة شبكة الـ 12 عمود فوق المعاينة — مساعدة بصرية للتصميم
 function GridOverlay() {
-  // 12-column baseline grid, subtle, pointer-events: none so it doesn't block clicks
+  // شبكة من 12 عمودًا، خفيفة الشفافية، pointer-events: none حتى لا تعيق النقر
   return (
     <div
       className="absolute inset-0 pointer-events-none"
@@ -1286,7 +1396,9 @@ function GridOverlay() {
   );
 }
 
+// شاشة فارغة تظهر في لوحة المعاينة عندما لا يكون هناك ملف معروض
 function EmptyCanvas({ busy, phase }) {
+  // العنوان يتغير حسب المرحلة الحالية
   const title =
     phase === "analyzing" ? "Analyzing your brief…" :
     phase === "building"  ? "Your draft is being composed…" :
@@ -1307,21 +1419,27 @@ function EmptyCanvas({ busy, phase }) {
   );
 }
 
-/* ======== Utils ======== */
+// =====================================================================
+// دوال مساعدة (Utils)
+// =====================================================================
 
+// تحويل عدد البايتات إلى نص مفهوم: B / KB / MB
 function formatBytes(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
+// تحويل وقت إلى "just now" / "5m ago" / وقت كامل
 function formatTime(at) {
   if (!at) return "";
   const now = new Date();
   const d = new Date(at);
+  // الفرق بالثواني
   const diff = Math.floor((now - d) / 1000);
   if (diff < 5) return "just now";
   if (diff < 60) return `${diff}s ago`;
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  // أكثر من ساعة → نُظهر الوقت الفعلي (HH:MM)
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
